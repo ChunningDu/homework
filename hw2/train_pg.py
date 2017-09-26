@@ -6,7 +6,7 @@ python train_pg.py CartPole-v0 -n 100 -b 1000 -e 5 -rtg --discount 0.99 -l 2  --
 
 Inverted pendulum:
 
-python train_pg.py InvertedPendulum-v1  -bl -n 100 -b 1000 --discount 0.995 -lr .025 -l 2 -s 32 -e 5 -rtg --exp_name invpend_base
+python train_pg.py InvertedPendulum-v1 -n 100 -b 1000 --discount 0.995 -lr .025 -l 2 -s 32 -e 5 -rtg --exp_name invpend_nobase -blr 0.001
 
 Half-cheetah:
 
@@ -17,11 +17,17 @@ import numpy as np
 import tensorflow as tf
 import gym
 import logz
-import scipy.signal
+# import scipy.signal
 import os
 import time
 import inspect
 from multiprocessing import Process
+from concurrent.futures import ThreadPoolExecutor
+
+
+import logging
+logging.getLogger('gym').setLevel(logging.CRITICAL)
+
 
 #============================================================================================#
 # Utilities
@@ -51,7 +57,8 @@ def build_mlp(
     with tf.variable_scope(scope):
         x = input_placeholder
         for n in range(n_layers - 1):
-            x = tf.layers.dense(x, size, activation=activation)
+            x = tf.layers.dense(
+                x, size, activation=activation)
         x = tf.layers.dense(
             x, output_size, activation=output_activation)
     return x
@@ -89,7 +96,9 @@ def train_PG(exp_name='',
              seed=0,
              # network arguments
              n_layers=1,
-             size=32
+             size=32,
+             threaded=False,
+             baseline_learning_rate=1e-2
              ):
 
     start = time.time()
@@ -241,11 +250,13 @@ def train_PG(exp_name='',
         # YOUR_CODE_HERE
         sy_target_n = tf.placeholder(
             shape=[None], name="target", dtype=tf.float32)
-        baseline_loss = tf.reduce_mean(
-            tf.square(sy_target_n - baseline_prediction))
+        # baseline_loss = tf.reduce_mean(
+        #     tf.square(sy_target_n - baseline_prediction))
+        baseline_loss = tf.losses.mean_squared_error(
+            sy_target_n, baseline_prediction)
 
         baseline_update_op = tf.train.AdamOptimizer(
-            learning_rate).minimize(baseline_loss)
+            baseline_learning_rate).minimize(baseline_loss)
 
 
     #========================================================================================#
@@ -264,40 +275,84 @@ def train_PG(exp_name='',
     # Training Loop
     #========================================================================================#
 
-    total_timesteps = 0
 
+    def thread_rollout():
+        env = gym.make(env_name)
+        ob = env.reset()
+        obs, acs, rewards = [], [], []
+        # animate_this_episode = (len(paths)==0 and (itr % 10 == 0) and animate)
+        steps = 0
+        while True:
+            # if animate_this_episode:
+            #     env.render()
+            #     time.sleep(0.05)
+            obs.append(ob)
+            ac = sess.run(
+                sy_sampled_ac, feed_dict={sy_ob_no : ob[None]})
+            if not discrete:
+                ac = ac[0]
+            acs.append(ac)
+            ob, rew, done, _ = env.step(ac)
+            rewards.append(rew)
+            steps += 1
+            if done or steps > max_path_length:
+                break
+        path = {"observation": np.array(obs),
+                "reward": np.array(rewards),
+                "action": np.array(acs)}
+        env.close()
+        return path
+
+    total_timesteps = 0
     for itr in range(n_iter):
-        print("********** Iteration %i ************"%itr)
+        print("********** Iteration %i ************" % itr)
 
         # Collect paths until we have enough timesteps
         timesteps_this_batch = 0
         paths = []
         while True:
-            ob = env.reset()
-            obs, acs, rewards = [], [], []
-            animate_this_episode=(len(paths)==0 and (itr % 10 == 0) and animate)
-            steps = 0
-            while True:
-                if animate_this_episode:
-                    env.render()
-                    time.sleep(0.05)
-                obs.append(ob)
-                ac = sess.run(sy_sampled_ac, feed_dict={sy_ob_no : ob[None]})
-                if not discrete:
-                    ac = ac[0]
-                acs.append(ac)
-                ob, rew, done, _ = env.step(ac)
-                rewards.append(rew)
-                steps += 1
-                if done or steps > max_path_length:
-                    break
-            path = {"observation" : np.array(obs), 
-                    "reward" : np.array(rewards), 
-                    "action" : np.array(acs)}
-            paths.append(path)
-            timesteps_this_batch += pathlength(path)
+
+            if threaded:
+                n_thread_iters = np.ceil(
+                    (min_timesteps_per_batch - timesteps_this_batch) /
+                    max_path_length)
+                n_thread_iters = int(n_thread_iters)
+
+                with ThreadPoolExecutor(12) as exec:
+                    futures = []
+                    for i in range(n_thread_iters):
+                        futures.append(exec.submit(thread_rollout))
+                    for future in futures:
+                        paths.append(future.result())
+                timesteps_this_batch += sum([pathlength(path) for path in paths])
+            else:
+                ob = env.reset()
+                obs, acs, rewards = [], [], []
+                animate_this_episode = (len(paths) == 0 and (itr % 10 == 0) and animate)
+                steps = 0
+                while True:
+                    if animate_this_episode:
+                        env.render()
+                        time.sleep(0.05)
+                    obs.append(ob)
+                    ac = sess.run(sy_sampled_ac, feed_dict={sy_ob_no : ob[None]})
+                    if not discrete:
+                        ac = ac[0]
+                    acs.append(ac)
+                    ob, rew, done, _ = env.step(ac)
+                    rewards.append(rew)
+                    steps += 1
+                    if done or steps > max_path_length:
+                        break
+                path = {"observation" : np.array(obs), 
+                        "reward" : np.array(rewards), 
+                        "action" : np.array(acs)}
+                paths.append(path)
+                timesteps_this_batch += pathlength(path)
+
             if timesteps_this_batch > min_timesteps_per_batch:
                 break
+
         total_timesteps += timesteps_this_batch
 
         # Build arrays for observation, action for the policy gradient update by concatenating 
@@ -401,6 +456,7 @@ def train_PG(exp_name='',
             b_n = (b_n - np.mean(b_n)) / np.std(b_n) * np.std(q_n) +\
                 np.mean(q_n)
             adv_n = q_n - b_n
+            print('squared error of advantages', np.square(adv_n).sum())
         else:
             adv_n = q_n.copy()
 
@@ -430,7 +486,9 @@ def train_PG(exp_name='',
             #
             # Hint #bl2: Instead of trying to target raw Q-values directly, rescale the 
             # targets to have mean zero and std=1. (Goes with Hint #bl1 above.)
-
+            tfvars = tf.get_collection(
+                tf.GraphKeys.TRAINABLE_VARIABLES, scope='nn_baseline')
+            tf.variables_initializer(tfvars)
             # YOUR_CODE_HERE
             target = (q_n - np.mean(q_n)) / np.std(q_n)
 
@@ -438,8 +496,10 @@ def train_PG(exp_name='',
                 sy_target_n: target,
                 sy_ob_no: ob_no
             }
-            sess.run(baseline_update_op, feed_dict=feed_dict)
-
+            baseline_loss_before = sess.run(baseline_loss, feed_dict)
+            for _ in range(50):
+                sess.run(baseline_update_op, feed_dict=feed_dict)
+            baseline_loss_after = sess.run(baseline_loss, feed_dict)
         #====================================================================================#
         #                           ----------SECTION 4----------
         # Performing the Policy Update
@@ -472,6 +532,9 @@ def train_PG(exp_name='',
         logz.log_tabular("TimestepsSoFar", total_timesteps)
         logz.log_tabular("LossBefore", loss_before)
         logz.log_tabular("LossAfter", loss_after)
+        if nn_baseline:
+            logz.log_tabular("BaseLineLossBefore", baseline_loss_before)
+            logz.log_tabular("BaseLineLossAfter", baseline_loss_after)
         logz.dump_tabular()
         logz.pickle_tf_vars()
 
@@ -494,6 +557,8 @@ def main():
     parser.add_argument('--n_experiments', '-e', type=int, default=1)
     parser.add_argument('--n_layers', '-l', type=int, default=1)
     parser.add_argument('--size', '-s', type=int, default=32)
+    parser.add_argument('--threaded', '-t', action='store_true')
+    parser.add_argument('--baseline_learning_rate', '-blr', type=float, default=1e-2)
     args = parser.parse_args()
 
     if not(os.path.exists('data')):
@@ -524,7 +589,9 @@ def main():
                 nn_baseline=args.nn_baseline, 
                 seed=seed,
                 n_layers=args.n_layers,
-                size=args.size
+                size=args.size,
+                threaded=args.threaded,
+                baseline_learning_rate=args.baseline_learning_rate
                 )
         # Awkward hacky process runs, because Tensorflow does not like
         # repeatedly calling train_PG in the same thread.
