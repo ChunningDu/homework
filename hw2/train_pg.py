@@ -10,7 +10,7 @@ python train_pg.py InvertedPendulum-v1 -n 100 -b 1000 --discount 0.995 -lr .025 
 
 Half-cheetah:
 
-
+python train_pg.py HalfCheetah-v1 -n 100 -ep 150 --discount 0.9 -l 2 -e 1 -b 1000 -s 32 -lr 0.01 -rtg --seed 543 -bl
 
 """
 import numpy as np
@@ -33,15 +33,22 @@ logging.getLogger('gym').setLevel(logging.CRITICAL)
 # Utilities
 #============================================================================================#
 
+def normc_initializer(std=1.0):
+    def _initializer(shape, dtype=None, partition_info=None):
+        out = np.random.randn(*shape).astype(np.float32)
+        out *= std / np.sqrt(np.square(out).sum(axis=0, keepdims=True))
+        return tf.constant(out)
+    return _initializer
+
+
 def build_mlp(
-        input_placeholder, 
+        input_placeholder,
         output_size,
-        scope, 
-        n_layers=2, 
-        size=64, 
+        scope,
+        n_layers=2,
+        size=64,
         activation=tf.tanh,
-        output_activation=None
-        ):
+        output_activation=None):
     #========================================================================================#
     #                           ----------SECTION 3----------
     # Network building
@@ -58,9 +65,14 @@ def build_mlp(
         x = input_placeholder
         for n in range(n_layers - 1):
             x = tf.layers.dense(
-                x, size, activation=activation)
+                x, size, activation=activation,
+                # kernel_initializer=normc_initializer()
+                )
         x = tf.layers.dense(
-            x, output_size, activation=output_activation)
+            x, output_size, activation=output_activation,
+            # kernel_initializer=normc_initializer(.1)
+            )
+
     return x
 
 
@@ -217,21 +229,32 @@ def train_PG(exp_name='',
             sy_ob_no, ac_dim, 'pg', n_layers, size)
         # logstd should just be a trainable variable, not a network output.
         N = tf.shape(sy_mean)[0]
-        sy_logstd = tf.ones([N])
-        sy_sampled_ac = sy_mean + sy_logstd * tf.random_normal(tf.shape(sy_mean))
-        sy_logprob_n = -0.5 * tf.to_float(N) * sy_logstd -\
-            0.5 * tf.to_float(N) * np.log(2 * np.pi) -\
-            0.5 * tf.reduce_sum(
-                tf.square(sy_ac_na - sy_mean), axis=1) / tf.exp(sy_logstd)
+        sy_logstd = tf.get_variable(
+            name='sy_logstd',
+            shape=[1, ac_dim],
+            initializer=tf.zeros_initializer())
+
+        sy_sampled_ac = sy_mean + tf.exp(sy_logstd) *\
+            tf.random_normal(tf.shape(sy_mean))
+
+        dim = tf.to_float(tf.shape(sy_mean)[-1])
+        log_det_cov = 2. * tf.reduce_sum(sy_logstd, axis=-1)
+        dev = sy_ac_na - sy_mean
+        maha = tf.reduce_sum(tf.square(dev / tf.exp(sy_logstd)), axis=-1)
+        sy_logprob_n = -0.5 * (dim * tf.log(2 * np.pi) + log_det_cov + maha)
+        # sy_logprob_n = -0.5 * tf.to_float(N) * sy_logstd -\
+        #     0.5 * tf.to_float(N) * np.log(2 * np.pi) -\
+        #     0.5 * tf.reduce_sum(
+        #         tf.square(sy_ac_na - sy_mean), axis=1) / tf.exp(sy_logstd)
 
     #========================================================================================#
     #                           ----------SECTION 4----------
     # Loss Function and Training Operation
     #========================================================================================#
 
-    loss = - tf.reduce_sum(sy_logprob_n * sy_adv_n, axis=0) # Loss function that we'll differentiate to get the policy gradient.
+    # Loss function that we'll differentiate to get the policy gradient.
+    loss = - tf.reduce_mean(sy_logprob_n * sy_adv_n)
     update_op = tf.train.AdamOptimizer(learning_rate).minimize(loss)
-
 
     #========================================================================================#
     #                           ----------SECTION 5----------
@@ -240,8 +263,8 @@ def train_PG(exp_name='',
 
     if nn_baseline:
         baseline_prediction = tf.squeeze(build_mlp(
-                                sy_ob_no, 
-                                1, 
+                                sy_ob_no,
+                                1,
                                 "nn_baseline",
                                 n_layers=n_layers,
                                 size=size))
@@ -283,14 +306,14 @@ def train_PG(exp_name='',
         # animate_this_episode = (len(paths)==0 and (itr % 10 == 0) and animate)
         steps = 0
         while True:
-            # if animate_this_episode:
-            #     env.render()
-            #     time.sleep(0.05)
             obs.append(ob)
             ac = sess.run(
-                sy_sampled_ac, feed_dict={sy_ob_no : ob[None]})
+                sy_sampled_ac, feed_dict={sy_ob_no: ob[None]})
             if not discrete:
                 ac = ac[0]
+                lb, ub = env.action_space.low, env.action_space.high
+                ac = lb + (ac + 1.) * 0.5 * (ub - lb)
+                ac = np.clip(ac, lb, ub)
             acs.append(ac)
             ob, rew, done, _ = env.step(ac)
             rewards.append(rew)
@@ -335,9 +358,12 @@ def train_PG(exp_name='',
                         env.render()
                         time.sleep(0.05)
                     obs.append(ob)
-                    ac = sess.run(sy_sampled_ac, feed_dict={sy_ob_no : ob[None]})
+                    ac = sess.run(sy_sampled_ac, feed_dict={sy_ob_no: ob[None]})
                     if not discrete:
                         ac = ac[0]
+                        lb, ub = env.action_space.low, env.action_space.high
+                        ac = lb + (ac + 1.) * 0.5 * (ub - lb)
+                        ac = np.clip(ac, lb, ub)
                     acs.append(ac)
                     ob, rew, done, _ = env.step(ac)
                     rewards.append(rew)
