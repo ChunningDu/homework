@@ -144,6 +144,7 @@ def initialize_interdependent_variables(session, vars_list, feed_dict):
     """
     vars_left = vars_list
     while len(vars_left) > 0:
+        # print('vars_left', vars_left)
         new_vars_left = []
         for v in vars_left:
             try:
