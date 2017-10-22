@@ -27,7 +27,7 @@ def sample(env,
     paths = []
 
     for n in range(num_paths):
-        print('Sampled {} out of {} paths'.format(n + 1, num_paths))
+        print('Sampling {} out of {} paths'.format(n + 1, num_paths))
         path = {"observations": [], "rewards": [],
                 "next_observations": [], "actions": []}
 
@@ -213,7 +213,7 @@ def train(env,
             num_paths=num_paths_onpol,
             horizon=env_horizon)
 
-        data.append(data_sample)
+        data.extend(data_sample)
 
         # LOGGING
         # Statistics for performance of MPC policy using

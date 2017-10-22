@@ -97,6 +97,8 @@ class NNDynamicsModel():
                 ).batch(self._batch_size)
             iterator = batch_dataset.make_one_shot_iterator()
             next_element = iterator.get_next()
+            loss = 0
+            idx = 0
             while True:
                 try:
                     o, a, d = self._sess.run(next_element)
@@ -107,9 +109,11 @@ class NNDynamicsModel():
                     self._input_acs: a,
                     self._delta: d
                 }
-                loss = self._sess.run(self.loss, feed_dict)
-                print('    Dyn fit -- loss {} :: epoch {}'.format(loss, i))
+                loss += self._sess.run(self.loss, feed_dict)
+                idx += 1
                 self._sess.run(self.optimizer, feed_dict)
+            print('    Dyn fit -- avg loss {} :: epoch {}'.format(
+                loss / idx, i))
 
     def predict(self, states, actions):
         """
