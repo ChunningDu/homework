@@ -55,9 +55,9 @@ class MPCcontroller(Controller):
             next_states.append(ns)
         states = states[:-1]
 
-        states = np.swapaxes(np.asarray(states), 0, 1).tolist()
-        actions = np.swapaxes(np.asarray(actions), 0, 1).tolist()
-        next_states = np.swapaxes(np.asarray(next_states), 0, 1).tolist()
+        states = np.swapaxes(np.asarray(states), 0, 1)
+        actions = np.swapaxes(np.asarray(actions), 0, 1)
+        next_states = np.swapaxes(np.asarray(next_states), 0, 1)
 
         costs = [trajectory_cost_fn(self.cost_fn, states[j],
                                     actions[j], next_states[j])

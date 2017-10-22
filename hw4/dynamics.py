@@ -89,7 +89,7 @@ class NNDynamicsModel():
         norm_actions = (acs - self._normalization[4]) /\
             (self._normalization[5] + EPS)
 
-        for _ in range(self._iterations):
+        for i in range(self._iterations):
             dataset = tf.data.Dataset.from_tensor_slices(
                 (norm_states, norm_actions, norm_deltas))
             batch_dataset = dataset.shuffle(
@@ -107,6 +107,8 @@ class NNDynamicsModel():
                     self._input_acs: a,
                     self._delta: d
                 }
+                loss = self._sess.run(self.loss, feed_dict)
+                print('    Dyn fit -- loss {} :: epoch {}'.format(loss, i))
                 self._sess.run(self.optimizer, feed_dict)
 
     def predict(self, states, actions):

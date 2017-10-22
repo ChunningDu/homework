@@ -8,7 +8,7 @@ import time
 import logz
 import os
 import matplotlib.pyplot as plt
-# from cheetah_env import HalfCheetahEnvNew
+from cheetah_env import HalfCheetahEnvNew
 
 
 def sample(env,
@@ -27,7 +27,7 @@ def sample(env,
     paths = []
 
     for n in range(num_paths):
-        print('Sampled {} out of {} paths'.format(n, num_paths))
+        print('Sampled {} out of {} paths'.format(n + 1, num_paths))
         path = {"observations": [], "rewards": [],
                 "next_observations": [], "actions": []}
 
@@ -204,8 +204,10 @@ def train(env,
     # new and old data as described in https://arxiv.org/abs/1708.02596
     #
     for itr in range(onpol_iters):
+        print('Fitting dyn_model')
         dyn_model.fit(data)
 
+        print('Doing MPC')
         data_sample = sample(
             env, mpc_controller,
             num_paths=num_paths_onpol,
